@@ -1,0 +1,211 @@
+@startuml C4_Code_Main
+' =====================================================================
+' C4 Level 4 — Code
+' Компоненты «Реестр определений метрик», «Движок агрегации»,
+' и «Публикатор в корпоративную шину»
+' Вариант: ОСНОВНОЙ (интеграционный)
+' =====================================================================
+
+title C4. Диаграмма кода — Сервис метрик и интеграций (основной вариант)
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+hide empty members
+
+package "Domain\\Metric" <<Frame>> {
+
+  class MetricDefinition <<Entity>> {
+    - MetricCode code
+    - MetricSource source
+    - AggregationType aggregation
+    - Period period
+    - Dimension[] dimensions
+    - bool isCustom
+    + supports(MetricSample sample): bool
+    + dimensionsOf(MetricSample sample): array
+  }
+
+  class MetricCode <<ValueObject>> {
+    - string value
+    + equals(MetricCode other): bool
+  }
+
+  class Period <<ValueObject>> {
+    - string iso8601Duration
+    + windowFor(DateTimeImmutable at): DateRange
+  }
+
+  class Dimension <<ValueObject>> {
+    - string name
+    - string sourceField
+  }
+
+  enum AggregationType {
+    SUM
+    AVG
+    COUNT
+    MIN
+    MAX
+    RATE
+  }
+
+  enum MetricSource {
+    INCIDENT
+    TELEMETRY
+    LIVESTOCK
+    FEED_CONSUMPTION
+    DEVICE_AVAILABILITY
+  }
+
+  class MetricSample <<Entity>> {
+    - string sampleId
+    - string farmId
+    - string sectionId
+    - MetricSource source
+    - float value
+    - DateTimeImmutable measuredAt
+  }
+
+  class MetricValue <<ValueObject>> {
+    - MetricCode code
+    - DateRange window
+    - float value
+    - array dimensions
+  }
+
+  class DateRange <<ValueObject>> {
+    - DateTimeImmutable from
+    - DateTimeImmutable to
+  }
+}
+
+package "Domain\\Aggregation" <<Frame>> {
+  interface AggregationStrategy {
+    + apply(MetricSample[] samples): float
+  }
+  class SumAggregation
+  class AvgAggregation
+  class CountAggregation
+  class MinAggregation
+  class MaxAggregation
+  class RateAggregation
+
+  class AggregationStrategyFactory {
+    + for(AggregationType type): AggregationStrategy
+  }
+}
+
+package "Application" <<Frame>> {
+  class MetricCalculator {
+    + calculate(MetricDefinition definition, DateRange window): MetricValue[]
+  }
+
+  class MetricDefinitionValidator {
+    + validate(MetricDefinitionDraft draft): ValidationResult
+  }
+
+  class MetricDefinitionDraft <<DTO>>
+  class ValidationResult <<DTO>>
+
+  class CalculationScheduler {
+    + run(DateTimeImmutable now): void
+  }
+
+  class AgentDataReceiver {
+    + accept(AgentDataPacket packet): void
+    - isAlreadyProcessed(string packetId): bool
+  }
+
+  class AgentDataPacket <<DTO>>
+}
+
+package "Ports" <<Frame>> {
+  interface MetricDefinitionRepository {
+    + save(MetricDefinition definition): void
+    + findActive(): MetricDefinition[]
+    + findByCode(MetricCode code): ?MetricDefinition
+  }
+
+  interface MetricValueRepository {
+    + store(MetricValue[] values): void
+    + samplesFor(MetricDefinition definition, DateRange window): MetricSample[]
+  }
+
+  interface MetricPublisher {
+    + publish(MetricValue[] values): void
+  }
+}
+
+package "Infrastructure" <<Frame>> {
+  class PdoMetricDefinitionRepository
+  class PdoMetricValueRepository
+
+  class KafkaMetricPublisher {
+    - string topic
+    + publish(MetricValue[] values): void
+    - toPublishedLanguage(MetricValue value): array
+  }
+}
+
+package "Presentation" <<Frame>> {
+  class MetricsController {
+    + create(Request request): Response
+    + update(Request request): Response
+    + disable(Request request): Response
+  }
+}
+
+MetricDefinition *-- MetricCode
+MetricDefinition *-- Period
+MetricDefinition *-- "0..*" Dimension
+MetricDefinition --> AggregationType
+MetricDefinition --> MetricSource
+MetricSample --> MetricSource
+MetricValue *-- MetricCode
+MetricValue *-- DateRange
+Period ..> DateRange
+
+AggregationStrategy <|.. SumAggregation
+AggregationStrategy <|.. AvgAggregation
+AggregationStrategy <|.. CountAggregation
+AggregationStrategy <|.. MinAggregation
+AggregationStrategy <|.. MaxAggregation
+AggregationStrategy <|.. RateAggregation
+AggregationStrategyFactory ..> AggregationStrategy : создаёт
+AggregationStrategyFactory ..> AggregationType
+
+MetricCalculator --> AggregationStrategyFactory
+MetricCalculator --> MetricValueRepository
+MetricCalculator ..> MetricDefinition
+MetricCalculator ..> MetricValue
+
+CalculationScheduler --> MetricDefinitionRepository
+CalculationScheduler --> MetricCalculator
+CalculationScheduler --> MetricPublisher
+
+AgentDataReceiver --> MetricValueRepository
+AgentDataReceiver ..> AgentDataPacket
+
+MetricDefinitionValidator ..> MetricDefinitionDraft
+MetricDefinitionValidator ..> ValidationResult
+MetricsController --> MetricDefinitionValidator
+MetricsController --> MetricDefinitionRepository
+
+MetricDefinitionRepository <|.. PdoMetricDefinitionRepository
+MetricValueRepository <|.. PdoMetricValueRepository
+MetricPublisher <|.. KafkaMetricPublisher
+
+note right of MetricDefinition
+  Пользовательская метрика (isCustom)
+  описывается тем же классом, что и базовая.
+  Метрика добавляется записью в БД,
+  без изменения кода (НФТ 7).
+end note
+
+note bottom of KafkaMetricPublisher
+  Единственная реализация MetricPublisher
+  в основном варианте. Замена на другой
+  транспорт не затрагивает домен.
+end note
+
+@enduml

@@ -1,0 +1,259 @@
+@startuml C4_Code_Alternative
+' =====================================================================
+' C4 Level 4 — Code
+' Компоненты «Реестр определений метрик», «Движок агрегации»,
+' «Писатель витрин», «Построитель отчётов», «Публичный API» и «Вебхуки»
+' Вариант: АЛЬТЕРНАТИВНЫЙ (автономный)
+' =====================================================================
+
+title C4. Диаграмма кода — Сервис метрик, отчётности и интеграций (альтернативный вариант)
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+hide empty members
+
+package "Domain\\Metric" <<Frame>> {
+
+  class MetricDefinition <<Entity>> {
+    - MetricCode code
+    - MetricSource source
+    - AggregationType aggregation
+    - Period period
+    - Dimension[] dimensions
+    - bool isCustom
+    + supports(MetricSample sample): bool
+    + dimensionsOf(MetricSample sample): array
+  }
+
+  class MetricCode <<ValueObject>>
+  class Period <<ValueObject>> {
+    + windowFor(DateTimeImmutable at): DateRange
+  }
+  class Dimension <<ValueObject>>
+  class DateRange <<ValueObject>>
+
+  enum AggregationType {
+    SUM
+    AVG
+    COUNT
+    MIN
+    MAX
+    RATE
+  }
+
+  enum MetricSource {
+    INCIDENT
+    TELEMETRY
+    LIVESTOCK
+    FEED_CONSUMPTION
+    DEVICE_AVAILABILITY
+  }
+
+  class MetricSample <<Entity>>
+  class MetricValue <<ValueObject>>
+}
+
+package "Domain\\Aggregation" <<Frame>> {
+  interface AggregationStrategy {
+    + apply(MetricSample[] samples): float
+  }
+  class SumAggregation
+  class AvgAggregation
+  class CountAggregation
+  class MinAggregation
+  class MaxAggregation
+  class RateAggregation
+  class AggregationStrategyFactory {
+    + for(AggregationType type): AggregationStrategy
+  }
+}
+
+package "Domain\\Reporting" <<Frame>> {
+  class ReportDefinition <<Entity>> {
+    - string reportCode
+    - MetricCode[] metrics
+    - Dimension[] groupBy
+    - Period period
+  }
+  class Report <<ValueObject>> {
+    - string reportCode
+    - ReportRow[] rows
+    - DateRange window
+  }
+  class ReportRow <<ValueObject>>
+}
+
+package "Domain\\Subscription" <<Frame>> {
+  class WebhookSubscription <<Entity>> {
+    - string subscriptionId
+    - string consumerId
+    - string callbackUrl
+    - MetricCode[] metrics
+    - string secret
+    + matches(MetricValue value): bool
+  }
+  class DeliveryAttempt <<Entity>> {
+    - int attempt
+    - DeliveryStatus status
+    - DateTimeImmutable nextRetryAt
+    + shouldRetry(): bool
+  }
+  enum DeliveryStatus {
+    PENDING
+    DELIVERED
+    FAILED
+    ABANDONED
+  }
+}
+
+package "Application" <<Frame>> {
+  class MetricCalculator {
+    + calculate(MetricDefinition definition, DateRange window): MetricValue[]
+  }
+  class MetricDefinitionValidator {
+    + validate(MetricDefinitionDraft draft): ValidationResult
+  }
+  class MetricDefinitionDraft <<DTO>>
+  class ValidationResult <<DTO>>
+  class CalculationScheduler {
+    + run(DateTimeImmutable now): void
+  }
+  class AgentDataReceiver {
+    + accept(AgentDataPacket packet): void
+    - isAlreadyProcessed(string packetId): bool
+  }
+  class AgentDataPacket <<DTO>>
+  class ReportBuilder {
+    + build(ReportDefinition definition, DateRange window): Report
+  }
+  class WebhookDispatcher {
+    + dispatch(MetricValue[] values): void
+    + retryPending(): void
+  }
+}
+
+package "Ports" <<Frame>> {
+  interface MetricDefinitionRepository {
+    + save(MetricDefinition definition): void
+    + findActive(): MetricDefinition[]
+  }
+  interface MetricValueRepository {
+    + store(MetricValue[] values): void
+    + samplesFor(MetricDefinition definition, DateRange window): MetricSample[]
+  }
+  interface AnalyticsStore {
+    + append(MetricSample[] samples): void
+    + appendValues(MetricValue[] values): void
+    + query(AnalyticsQuery query): ReportRow[]
+  }
+  interface SubscriptionRepository {
+    + save(WebhookSubscription subscription): void
+    + activeFor(MetricCode code): WebhookSubscription[]
+  }
+}
+
+package "Infrastructure" <<Frame>> {
+  class PdoMetricDefinitionRepository
+  class PdoMetricValueRepository
+  class PdoSubscriptionRepository
+  class ClickHouseAnalyticsStore {
+    - ClickHouseClient client
+    + append(MetricSample[] samples): void
+    + appendValues(MetricValue[] values): void
+    + query(AnalyticsQuery query): ReportRow[]
+  }
+  class ClickHouseClient
+  class AnalyticsQuery <<DTO>>
+  class HttpWebhookSender {
+    + send(WebhookSubscription subscription, MetricValue value): DeliveryAttempt
+    - sign(string payload, string secret): string
+  }
+}
+
+package "Presentation" <<Frame>> {
+  class MetricsController {
+    + create(Request request): Response
+    + update(Request request): Response
+    + disable(Request request): Response
+  }
+  class PublicMetricsController {
+    + list(Request request): Response
+    + values(Request request): Response
+    + subscribe(Request request): Response
+  }
+  class ApiVersionNegotiator {
+    + resolve(Request request): string
+  }
+}
+
+MetricDefinition *-- MetricCode
+MetricDefinition *-- Period
+MetricDefinition *-- "0..*" Dimension
+MetricDefinition --> AggregationType
+MetricDefinition --> MetricSource
+MetricSample --> MetricSource
+MetricValue *-- MetricCode
+MetricValue *-- DateRange
+Period ..> DateRange
+
+AggregationStrategy <|.. SumAggregation
+AggregationStrategy <|.. AvgAggregation
+AggregationStrategy <|.. CountAggregation
+AggregationStrategy <|.. MinAggregation
+AggregationStrategy <|.. MaxAggregation
+AggregationStrategy <|.. RateAggregation
+AggregationStrategyFactory ..> AggregationStrategy : создаёт
+
+MetricCalculator --> AggregationStrategyFactory
+MetricCalculator --> MetricValueRepository
+CalculationScheduler --> MetricDefinitionRepository
+CalculationScheduler --> MetricCalculator
+CalculationScheduler --> MetricValueRepository
+CalculationScheduler --> AnalyticsStore
+CalculationScheduler --> WebhookDispatcher
+
+AgentDataReceiver --> MetricValueRepository
+AgentDataReceiver --> AnalyticsStore
+AgentDataReceiver ..> AgentDataPacket
+
+ReportDefinition *-- "1..*" MetricCode
+Report *-- "0..*" ReportRow
+ReportBuilder --> AnalyticsStore
+ReportBuilder ..> ReportDefinition
+ReportBuilder ..> Report
+
+WebhookDispatcher --> SubscriptionRepository
+WebhookDispatcher --> HttpWebhookSender
+WebhookSubscription *-- "0..*" DeliveryAttempt
+DeliveryAttempt --> DeliveryStatus
+
+MetricDefinitionValidator ..> MetricDefinitionDraft
+MetricDefinitionValidator ..> ValidationResult
+MetricsController --> MetricDefinitionValidator
+MetricsController --> MetricDefinitionRepository
+PublicMetricsController --> MetricValueRepository
+PublicMetricsController --> SubscriptionRepository
+PublicMetricsController --> ApiVersionNegotiator
+
+MetricDefinitionRepository <|.. PdoMetricDefinitionRepository
+MetricValueRepository <|.. PdoMetricValueRepository
+SubscriptionRepository <|.. PdoSubscriptionRepository
+AnalyticsStore <|.. ClickHouseAnalyticsStore
+ClickHouseAnalyticsStore --> ClickHouseClient
+ClickHouseAnalyticsStore ..> AnalyticsQuery
+
+note right of PublicMetricsController
+  Открытый контракт для внешних потребителей
+  (Open Host Service). Версионирование вынесено
+  в ApiVersionNegotiator — заготовка под
+  публичный API SaaS-платформы (Task5).
+end note
+
+note bottom of ClickHouseAnalyticsStore
+  Собственное аналитическое хранилище
+  заменяет корпоративный DWH.
+  Домен работает через порт AnalyticsStore
+  и о ClickHouse не знает.
+end note
+
+@enduml
